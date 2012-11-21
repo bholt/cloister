@@ -6,13 +6,13 @@ x = 2
 y = 5
 
 # puts "# Local:"
-# l = Cloister::LocalExecutor.new
+# l = Cloister::Local.new
 # l.run {
 #   puts "Hello world, x+y=#{x+y}."
 #   puts `hostname`
 # }
 
-# $slurm = Cloister::SlurmExecutor.new
+# $slurm = Cloister::Slurm.new
 
 # (1..10).each do |i|
 #   $slurm.run {
@@ -24,7 +24,7 @@ y = 5
 # $slurm.sync
 # puts $slurm.jobs
 
-$batch = Cloister::BatchExecutor.new
+$batch = Cloister::Batch.new
 (1..10).each do |i|
   $batch.run {
     puts "Hello from iteration #{i} on #{`hostname`}:"
@@ -37,10 +37,8 @@ $batch.run {
 	puts "Running long job..."
   (0..30).each {|i|
     sleep(4)
-    puts "done with iteration #{i}"
-    $stdout.flush
+    puts(%Q[done with iteration #{i}\n])
   }
 }
 
 $batch.pry
-$batch.status

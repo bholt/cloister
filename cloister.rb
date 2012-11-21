@@ -14,6 +14,7 @@ suppress_warnings { require 'serializable_proc' }
 require 'set'
 require 'fiber'
 require 'securerandom'
+require 'colored'
 
 require 'file-tail'
 class File
@@ -82,28 +83,20 @@ module Cloister
     def out()          @out ||= File.open(@out_file, 'r') end
     def tail
       stop_tailing = false
-      Signal.trap("INT") { stop_tailing = true }
       out.backward(10).tail {|l|
         puts l
         break if stop_tailing
       }
-      # while not stop_tailing do
-      #   begin
-      #     puts out.readpartial(4096)
-      #   rescue EOFError
-      #     break
-      #   end
-      # end
     end
   end
 
-  class LocalExecutor < Executor
+  class Local < Executor
     def run(&blk)
       puts `ruby #{Cloister.make_script(&blk)}`
     end
   end
 
-  class BatchExecutor < Executor
+  class Batch < Executor
     def initialize()
       super()
       @default_flags = {nnode:4, ppn:2, partition:'grappa'}
@@ -141,13 +134,17 @@ module Cloister
 
     def status
       update
-      puts "### Status ###"
-      @jobs.each {|k,v| puts v.to_s }
+      @index = []
+      @jobs.each {|k,v|
+        puts "[#{"%2d" % @index.size}] ".blue + v.to_s
+        @index << k
+      }
       return
     end
+    def job(n) @jobs[@index[n]] end
   end
 
-  class SlurmExecutor < Executor
+  class Slurm < Executor
     def initialize()
       super()
       @default_flags = {nnode:4, ppn:2, partition:'grappa'}
