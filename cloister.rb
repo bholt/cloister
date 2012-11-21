@@ -14,7 +14,11 @@ suppress_warnings { require 'serializable_proc' }
 require 'set'
 require 'fiber'
 require 'securerandom'
+
 require 'file-tail'
+class File
+  include File::Tail
+end
 
 module Cloister
   def self.make_script(path=Dir.tmpdir, &blk)
@@ -55,22 +59,42 @@ module Cloister
   end
 
   class BatchJob
-    attr_reader :jobid, :state, :nodes, :start_time
+    attr_reader :jobid, :state, :nodes, :out_file
     def initialize(out_file)
       @out_file = out_file
     end
+
     def update(sinfo) # Slurm::JobInfo
       @jobid = sinfo[:job_id]
       @state = sinfo[:job_state]
       @nodes = sinfo[:nodes]
       @start_time = sinfo[:start_time]
+      @end_time = sinfo[:end_time]
     end
-    def to_s
-      "#{@jobid}: #{@state} on #{@nodes}, elapsed time: #{elapsed_time}"
+
+    def to_s()
+      time = @state == :JOB_COMPLETE ? total_time : elapsed_time
+      "#{@jobid}: #{@state} on #{@nodes}, time: #{time}"
     end
+
     def elapsed_time() Time.at(Time.now.tv_sec - @start_time).gmtime.strftime('%R:%S') end
-    def out()          File.open(@out_file, 'r') end
-    # def stderr()       File.open("@script.stderr", 'r') end
+    def total_time()   Time.at(@end_time - @start_time).gmtime.strftime('%R:%S') end
+    def out()          @out ||= File.open(@out_file, 'r') end
+    def tail
+      stop_tailing = false
+      Signal.trap("INT") { stop_tailing = true }
+      out.backward(10).tail {|l|
+        puts l
+        break if stop_tailing
+      }
+      # while not stop_tailing do
+      #   begin
+      #     puts out.readpartial(4096)
+      #   rescue EOFError
+      #     break
+      #   end
+      # end
+    end
   end
 
   class LocalExecutor < Executor
@@ -84,7 +108,7 @@ module Cloister
       super()
       @default_flags = {nnode:4, ppn:2, partition:'grappa'}
     end
-    
+
     def run(flags = {}, &blk)
       flags = @default_flags.merge(flags)
       d = "#{Dir.pwd}/.cloister"
@@ -95,7 +119,7 @@ module Cloister
       cmd = "#{File.dirname(__FILE__)}/cloister_sbatch.sh '#{File.dirname f}' '#{File.basename f}' #{`hostname`.strip}"
       s = `sbatch --nodes=#{flags[:nnode]} --ntasks-per-node=#{flags[:ppn]} --partition=#{flags[:partition]} --output=#{fout} --error=#{fout} #{cmd}`
       jobid = s[/Submitted batch job (\d+)/,1].to_i
-      @jobs[jobid] = BatchJob.new(fout)
+      @jobs[jobid] = BatchJob.new(fout.gsub(/%j/,jobid.to_s))
       @running << jobid
       return jobid
     end
@@ -109,7 +133,6 @@ module Cloister
         raise "assertion failure" unless jmsg[:record_count] == 1
         info = Slurm::JobInfo.new(jmsg[:job_array])
 
-        # binding.pry
         @jobs[jobid].update(info)
 
         Slurm.slurm_free_job_info_msg(jmsg)

@@ -5,12 +5,12 @@ require './cloister.rb'
 x = 2
 y = 5
 
-puts "# Local:"
-l = Cloister::LocalExecutor.new
-l.run {
-  puts "Hello world, x+y=#{x+y}."
-  puts `hostname`
-}
+# puts "# Local:"
+# l = Cloister::LocalExecutor.new
+# l.run {
+#   puts "Hello world, x+y=#{x+y}."
+#   puts `hostname`
+# }
 
 # $slurm = Cloister::SlurmExecutor.new
 
@@ -31,6 +31,16 @@ $batch = Cloister::BatchExecutor.new
     puts "x+y = #{x+y}"
   }
 end
+
+$batch.run {
+  @@_not_isolated_vars = :global
+	puts "Running long job..."
+  (0..30).each {|i|
+    sleep(4)
+    puts "done with iteration #{i}"
+    $stdout.flush
+  }
+}
 
 $batch.pry
 $batch.status
