@@ -9,14 +9,76 @@ end
 
 module Slurm
   extend FFI::Library
+  ffi_lib_flags(:lazy, :global)
   ffi_lib 'slurm'
 
   HIGHEST_DIMENSIONS = 5
 
   attach_function :slurm_api_version, [], :long
+  attach_function :slurm_init_job_desc_msg, [:pointer], :void  # (JobDescriptor ptr)
+  attach_function :slurm_load_job, [:pointer, :uint32, :uint16], :int # (job_info_msg_t**, jobid, show_flags)
+  attach_function :slurm_load_jobs, [:int64, :pointer, :uint16], :int # (update_time, job_info_msg_t** job_info_msg_pptr, show_flags)
+  attach_function :slurm_free_job_info_msg, [:pointer], :void # (job_info_msg_t*)
 
-  #  For submit, allocate, and update requests 
+  # values may be OR'd with JOB_STATE_FLAGS
+  JobState = enum(
+    :JOB_PENDING,    #  queued waiting for initiation 
+    :JOB_RUNNING,    #  allocated resources and executing 
+    :JOB_SUSPENDED,    #  allocated resources, execution suspended 
+    :JOB_COMPLETE,   #  completed execution successfully 
+    :JOB_CANCELLED,    #  cancelled by user 
+    :JOB_FAILED,   #  completed execution unsuccessfully 
+    :JOB_TIMEOUT,    #  terminated on reaching time limit 
+    :JOB_NODE_FAIL,    #  terminated on node failure 
+    :JOB_PREEMPTED,    #  terminated due to preemption 
+    :JOB_END     #  not a real state, last entry in table 
+  )
+
+    # Reasons for job to be pending */
+  enum :job_state_reason, [
+    :WAIT_NO_REASON, 0, #  not set or job not pending 
+    :WAIT_PRIORITY,    #  higher priority jobs exist 
+    :WAIT_DEPENDENCY,  #  dependent job has not completed 
+    :WAIT_RESOURCES,   #  required resources not available 
+    :WAIT_PART_NODE_LIMIT, #  request exceeds partition node limit 
+    :WAIT_PART_TIME_LIMIT, #  request exceeds partition time limit 
+    :WAIT_PART_DOWN,   #  requested partition is down 
+    :WAIT_PART_INACTIVE, #  requested partition is inactive 
+    :WAIT_HELD,    #  job is held by administrator 
+    :WAIT_TIME,    #  job waiting for specific begin time 
+    :WAIT_LICENSES,    #  job is waiting for licenses 
+    :WAIT_ASSOC_JOB_LIMIT, #  user/bank job limit reached 
+    :WAIT_ASSOC_RESOURCE_LIMIT,#  user/bank resource limit reached 
+    :WAIT_ASSOC_TIME_LIMIT,  #  user/bank time limit reached 
+    :WAIT_RESERVATION, #  reservation not available 
+    :WAIT_NODE_NOT_AVAIL,  #  required node is DOWN or DRAINED 
+    :WAIT_HELD_USER,   #  job is held by user 
+    :WAIT_TBD2,
+    :FAIL_DOWN_PARTITION,  #  partition for job is DOWN 
+    :FAIL_DOWN_NODE,   #  some node in the allocation failed 
+    :FAIL_BAD_CONSTRAINTS, #  constraints can not be satisfied 
+    :FAIL_SYSTEM,    #  slurm system failure 
+    :FAIL_LAUNCH,    #  unable to launch job 
+    :FAIL_EXIT_CODE,   #  exit code was non-zero 
+    :FAIL_TIMEOUT,   #  reached end of time limit 
+    :FAIL_INACTIVE_LIMIT,  #  reached slurm InactiveLimit 
+    :FAIL_ACCOUNT,     #  invalid account 
+    :FAIL_QOS,         #  invalid QOS 
+    :WAIT_QOS_THRES,         #  required QOS threshold has been breached 
+    :WAIT_QOS_JOB_LIMIT, #  QOS job limit reached 
+    :WAIT_QOS_RESOURCE_LIMIT,#  QOS resource limit reached 
+    :WAIT_QOS_TIME_LIMIT #  QOS time limit reached 
+  ]
+
+
+  # For submit, allocate, and update requests 
+  # `job_desc_msg_t`
   class JobDescriptor < FFI::Struct
+  	def initialize()
+      super()
+      Slurm.slurm_init_job_desc_msg(self)
+  	end
+
     layout :account, :string,    #  charge to specified account 
       :acctg_freq, :uint16,  #  accounting polling interval (seconds) 
       :alloc_node, :string, # node making resource allocation request 
@@ -115,11 +177,95 @@ module Slurm
       :wckey, :string            #  wckey for job 
   end
 
-  pry
+  class JobInfo < FFI::Struct
+    layout :account, :string,  #  charge to specified account */
+        :alloc_node, :string,  #  local node making resource alloc */
+        :alloc_sid, :uint32,  #  local sid making resource alloc */
+        :assoc_id, :uint32,  #  association id for job */
+        :batch_flag, :uint16,  #  1 if batch: queued job with script */
+        :batch_host, :string,  #  name of host running batch script */
+        :batch_script, :string,  #  contents of batch script */
+        :command, :string,  #  command to be executed */
+        :comment, :string,  #  arbitrary comment (used by Moab scheduler) */
+        :contiguous, :uint16,  #  1 if job requires contiguous nodes */
+        :cpus_per_task, :uint16,  #  number of processors required for each task */
+        :dependency, :string,  #  synchronize job execution with other jobs */
+        :derived_ec, :uint32,  #  highest exit code of all job steps */
+        :eligible_time, :int64,  #  time job is eligible for running */
+        :end_time, :int64,  #  time of termination, actual or expected */
+        :exc_nodes, :string,  #  comma separated list of excluded nodes */
+        :exc_node_inx, :pointer, # int* /* excluded list index pairs into node_table: start_range_1, end_range_1, start_range_2, .., -1  */
+        :exit_code, :uint32,  #  exit code for job (status from wait call) */
+        :features, :string,  #  comma separated list of required features */
+        :gres, :string,  #  comma separated list of generic resources */
+        :group_id, :uint32,  #  group job sumitted as */
+        :job_id, :uint32,  #  job ID */
+        :job_state, JobState,  #  state of the job, see enum job_states */
+        :licenses, :string,  #  licenses required by the job */
+        :max_cpus, :uint32,  #  maximum number of cpus usable by job */
+        :max_nodes, :uint32,  #  maximum number of nodes usable by job */
+        :sockets_per_node, :uint16,  #  sockets per node required by job */
+        :cores_per_socket, :uint16,  #  cores per socket required by job */
+        :threads_per_core, :uint16,  #  threads per core required by job */
+        :name, :string,  #  name of the job */
+        :network, :string,  #  network specification */
+        :nodes, :string,  #  list of nodes allocated to job */
+        :nice, :uint16,  #  requested priority change */
+        :node_inx, :pointer, # int* /* list index pairs into node_table for *nodes: start_range_1, end_range_1, start_range_2, .., -1  */
+        :ntasks_per_core, :uint16,  #  number of tasks to invoke on each core */
+        :ntasks_per_node, :uint16,  #  number of tasks to invoke on each node */
+        :ntasks_per_socket, :uint16,  #  number of tasks to invoke on each socket */
+
+        :num_nodes, :uint32,  #  minimum number of nodes required by job */
+        :num_cpus, :uint32,  #  minimum number of cpus required by job */
+        :partition, :string,  #  name of assigned partition */
+        :pn_min_memory, :uint32,  #  minimum real memory per node, default=0 */
+        :pn_min_cpus, :uint16,  #  minimum # CPUs per node, default=0 */
+        :pn_min_tmp_disk, :uint32,  #  minimum tmp disk per node, default=0 */
+        :pre_sus_time, :int64,  #  time job ran prior to last suspend */
+        :priority, :uint32,  #  relative priority of the job, 0=held, 1=required nodes DOWN/DRAINED */
+        :qos, :string,  #  Quality of Service */
+        :req_nodes, :string,  #  comma separated list of required nodes */
+        :req_node_inx, :pointer, # int* /* required list index pairs into node_table: start_range_1, end_range_1, start_range_2, .., -1  */
+        :req_switch, :uint32,  #  Minimum number of switches */
+        :requeue, :uint16,  #  enable or disable job requeue option */
+        :resize_time, :int64,  #  time of latest size change */
+        :restart_cnt, :uint16,  #  count of job restarts */
+        :resv_name, :string,  #  reservation name */
+        :select_jobinfo, :pointer, # dynamic_plugin_data_t *select_jobinfo; /* opaque data type, process using slurm_get_select_jobinfo()
+        :job_resrcs, :pointer, # job_resources_t *job_resrcs; /* opaque data type, job resources */
+        :shared, :uint16,  #  1 if job can share nodes with other jobs */
+        :show_flags, :uint16,  #  conveys level of details requested */
+        :start_time, :int64,  #  time execution begins, actual or expected */
+        :state_desc, :string,  #  optional details for state_reason */
+        :state_reason, :uint16,  #  reason job still pending or failed, see slurm.h:enum job_state_reason */
+        :submit_time, :int64,  #  time of job submission */
+        :suspend_time, :int64,  #  time job last suspended or resumed */
+        :time_limit, :uint32,  #  maximum run time in minutes or INFINITE */
+        :time_min, :uint32,  #  minimum run time in minutes or INFINITE */
+        :user_id, :uint32,  #  user the job runs as */
+        :preempt_time, :int64,  #  preemption signal time */
+        :wait4switch, :uint32,  #  Maximum time to wait for minimum switches */
+        :wckey, :string,  #  wckey for job */
+        :work_dir, :string  #  pathname of working directory */
+  end
+
+  class JobInfoMsg < FFI::Struct
+    layout :last_update, :int64,   # last_update; /* time of latest info */
+           :record_count, :uint32, # record_count;  /* number of records */
+           :job_array, :pointer    # job_info_t *job_array;  /* the job records */
+  end
+
+  # pry
 
 end # module Slurm
 
-puts "got pid: #{GetPid.getpid}"
-puts "slurm"
-puts "api_version: #{Slurm.slurm_api_version}"
+# main()
+if __FILE__ == $PROGRAM_NAME
+  # puts "got pid: #{GetPid.getpid}"
+  # puts "slurm"
+  puts "api_version: #{Slurm.slurm_api_version}"
+  # job = Slurm.slurm_load_job
+end
+
 

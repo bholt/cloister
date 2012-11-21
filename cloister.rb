@@ -1,4 +1,3 @@
-
 # define 'supress_warnings' (could be in generic helper lib if we had one)
 module Kernel
   def suppress_warnings
@@ -14,13 +13,13 @@ end
 suppress_warnings { require 'serializable_proc' }
 require 'set'
 require 'fiber'
-require 'open4'
-require 'io/wait'
+require 'securerandom'
+require 'file-tail'
 
 module Cloister
-  def self.make_script(&blk)
+  def self.make_script(path=Dir.tmpdir, &blk)
     sproc = SerializableProc.new(&blk)
-    f = "#{Dir.tmpdir}/cloister.#{Process.pid}.#{SecureRandom.hex(2)}.rb"
+    f = "#{path}/cloister.#{Process.pid}.#{SecureRandom.hex(2)}.rb"
     File.open(f, 'w') {|o| o.write(
       %Q[#!/usr/bin/env ruby\n#encoding: ascii-8bit
         require './cloister.rb'
@@ -51,14 +50,77 @@ module Cloister
             @running.delete t
           end
         }
-        Thread.pass
       end
     end
+  end
+
+  class BatchJob
+    attr_reader :jobid, :state, :nodes, :start_time
+    def initialize(out_file)
+      @out_file = out_file
+    end
+    def update(sinfo) # Slurm::JobInfo
+      @jobid = sinfo[:job_id]
+      @state = sinfo[:job_state]
+      @nodes = sinfo[:nodes]
+      @start_time = sinfo[:start_time]
+    end
+    def to_s
+      "#{@jobid}: #{@state} on #{@nodes}, elapsed time: #{elapsed_time}"
+    end
+    def elapsed_time() Time.at(Time.now.tv_sec - @start_time).gmtime.strftime('%R:%S') end
+    def out()          File.open(@out_file, 'r') end
+    # def stderr()       File.open("@script.stderr", 'r') end
   end
 
   class LocalExecutor < Executor
     def run(&blk)
       puts `ruby #{Cloister.make_script(&blk)}`
+    end
+  end
+
+  class BatchExecutor < Executor
+    def initialize()
+      super()
+      @default_flags = {nnode:4, ppn:2, partition:'grappa'}
+    end
+    
+    def run(flags = {}, &blk)
+      flags = @default_flags.merge(flags)
+      d = "#{Dir.pwd}/.cloister"
+      begin Dir.mkdir(d) rescue Errno::EEXIST end
+
+      f = Cloister.make_script(d, &blk)
+      fout = "#{d}/cloister.%j.out"
+      cmd = "#{File.dirname(__FILE__)}/cloister_sbatch.sh '#{File.dirname f}' '#{File.basename f}' #{`hostname`.strip}"
+      s = `sbatch --nodes=#{flags[:nnode]} --ntasks-per-node=#{flags[:ppn]} --partition=#{flags[:partition]} --output=#{fout} --error=#{fout} #{cmd}`
+      jobid = s[/Submitted batch job (\d+)/,1].to_i
+      @jobs[jobid] = BatchJob.new(fout)
+      @running << jobid
+      return jobid
+    end
+
+    def update
+      require './slurm_ffi.rb'
+      @running.each do |jobid|
+        jptr = FFI::MemoryPointer.new :pointer
+        Slurm.slurm_load_job(jptr, jobid, 0)
+        jmsg = Slurm::JobInfoMsg.new(jptr.get_pointer(0))
+        raise "assertion failure" unless jmsg[:record_count] == 1
+        info = Slurm::JobInfo.new(jmsg[:job_array])
+
+        # binding.pry
+        @jobs[jobid].update(info)
+
+        Slurm.slurm_free_job_info_msg(jmsg)
+      end
+    end
+
+    def status
+      update
+      puts "### Status ###"
+      @jobs.each {|k,v| puts v.to_s }
+      return
     end
   end
 
@@ -68,16 +130,6 @@ module Cloister
       @default_flags = {nnode:4, ppn:2, partition:'grappa'}
     end
 
-    def run_batch(flags = {}, &blk)
-      flags = @default_flags.merge(flags)
-      f = Cloister.make_script(&blk)
-      cmd = "#{File.dirname(__FILE__)}/cloister_sbatch.sh '#{File.dirname f}' '#{File.basename f}' #{`hostname`.strip}"
-      s = `sbatch --nodes=#{flags[:nnode]} --ntasks-per-node=#{flags[:ppn]} --partition=#{flags[:partition]} --output=#{f}.stdout --error=#{f}.stderr #{cmd}`
-      jobid = s[/Submitted batch job (\d+)/,1].to_i
-      @jobs[jobid] = {stdout:"#{jobid}"}
-      @running << jobid
-      return jobid
-    end
     def run(flags = {}, &blk)
       flags = @default_flags.merge(flags)
       f = Cloister.make_script(&blk)
@@ -103,7 +155,6 @@ module Cloister
           end
           Fiber.yield
         end
-        # puts "done reading"
         @jobs[pout.pid] = {output:output}
       end
       @running << t
