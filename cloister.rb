@@ -132,6 +132,11 @@ module Cloister
       end
     end
 
+    def jobs
+      update
+      return @jobs
+    end
+
     def status
       update
       @index = []
